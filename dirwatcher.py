@@ -13,66 +13,69 @@ import argparse
 import logging
 import signal
 import time
+from os.path import isfile, join, splitext
 
 stay_running = True
-files_logged = []
+files_logged = {}
 found_magic_string = {}
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 formatter = logging.Formatter('%(asctime)s:%(message)s')
-file_handler = logging.FileHandler("dirwatcher.log")
-file_handler.setFormatter(formatter)
+# file_handler = logging.FileHandler("dirwatcher.log")
+# file_handler.setFormatter(formatter)
 
-stream_handler = logging.StreamHandler()
+stream_handler = logging.StreamHandler(sys.stdout)
+stream_handler.setLevel(logging.INFO)
 stream_handler.setFormatter(formatter)
-
-logger.addHandler(file_handler)
 logger.addHandler(stream_handler)
 
 
-def search_for_magic(filename, start_line, magic_string):
+def search_for_magic(file_path, filename, start_line, magic_string):
     """searches file for a line containing magic_string"""
-    with open(filename) as doc:
-        content = doc.readlines()
-        for line_number, line in enumerate(content):
-            if magic_string in line:
-                if filename not in found_magic_string.keys():
-                    found_magic_string[filename] = line_number
-                if (line_number >= found_magic_string[start_line]) and start_line in found_magic_string.keys():
-                    logger.info("Match found for {} found on line {} in {}".format(magic_, line_number + 1, start_line))
-                    found_magic_string[start_line] += 1
+    current_line = 1
+    with open(file_path) as doc:
+        for line in doc:
+            if current_line >= start_line:
+                if magic_string in line:   
+                    logger.info(f"Magic text found on line {current_line} in {filename}") 
+                current_line += 1
+    files_logged[filename] = current_line
 
 
-def watch_directory(path, magic_string, extension, interval):
+def watch_directory(directory, magic_string, extension):
     """Watches directory for instances of a magic string"""
     global files_logged
     global found_magic_string
+    files_to_remove = []
 
     try:
-        text_files = [f for f in os.listdir(directory) if not f.startswith('.')]
-    except:
-        logger.info('Directory {} does not exists'.format(directory))
+        text_files = [f for f in os.listdir(directory) if isfile(join(directory, f))]
+        logger.info(text_files)
+    except OSError as err:
+        logger.error('Directory {} does not exists'.format(directory))
     else:
         abspath = os.path.abspath(directory)
         files = os.listdir(abspath)
         for file in text_files:
-            if file.endswith(ext) and file not in files_logged:
+            file_name, file_ext = splitext(file)
+            if file_ext == extension and file not in files_logged:
                 logger.info('New file found: {}'.format(file))
-                files_logged.append(file)
-            if file.endswith(ext):
-                full_path = os.path.join(abspath, file)
-                if search_single_file(full_path, magic_string):
-                    break
-        for file in files_logged:
+                files_logged[file] = 0
+        for file in files_logged.keys():
             if file not in files:
                 logger.info('File deleted: {}'.format(file))
-                files_logged.remove(file)
-                found_magic_string[file] = 0
+                files_to_remove.append(file)
+        for file in files_to_remove:
+            del files_logged[file]
+        for k, v in files_logged.items():
+            file_path = join(directory, k)
+            search_for_magic(file_path, k, v, magic_string)         
 
 
 def create_parser():
+    """Parser to add command line arguments"""
     parser = argparse.ArgumentParser(description='Watches a directory for files containing magic string')
     parser.add_argument('-i', '--int', help='Polling interval for program')
     parser.add_argument('-e', '--ext', help='Extension of file to search for', default=".txt")
@@ -82,6 +85,7 @@ def create_parser():
 
 
 def signal_handler(sig_num, frame):
+    """function that waits for OS interupt"""
     global stay_running
     sigs = dict((k, v) for v, k in reversed(sorted(signal.__dict__.items()))
                 if v.startswith('SIG') and not v.startswith('SIG_'))
@@ -93,19 +97,19 @@ def signal_handler(sig_num, frame):
 def main(args):
     start_time = time.time()
     parser = create_parser()
-    args = parser.parse_args()
+    ns = parser.parse_args(args)
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     """function for finding magic word"""
-    logger.info("Watching directory {} for files ending with {} containing magic string {}".format(args.path, args.ext, args.magic))
+    logger.info("Watching directory {} for files ending with {} containing magic string {}".format(ns.path, ns.ext, ns.magic))
     while stay_running:
         try:
-            find_magic_word(args.path, args.magic, args.ext)
+            watch_directory(ns.path, ns.magic, ns.ext)
         except Exception:
             logger.exception("exception on main")
-        time.sleep(float(args.int))
+        time.sleep(float(ns.int))
         logger.info("Program uptime: {} seconds".format(time.time() - start_time))
 
 
